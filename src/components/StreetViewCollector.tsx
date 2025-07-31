@@ -56,12 +56,75 @@ export const StreetViewCollector = () => {
     }
   };
 
+  // Function to check if a point is within GeoJSON boundary
+  const isPointInBoundary = (lat: number, lng: number, geojson: any): boolean => {
+    if (!geojson || !geojson.features) return false;
+    
+    for (const feature of geojson.features) {
+      if (feature.geometry.type === 'Polygon') {
+        const coordinates = feature.geometry.coordinates[0];
+        if (pointInPolygon([lng, lat], coordinates)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  // Point in polygon algorithm
+  const pointInPolygon = (point: [number, number], polygon: number[][]): boolean => {
+    const [x, y] = point;
+    let inside = false;
+    
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const [xi, yi] = polygon[i];
+      const [xj, yj] = polygon[j];
+      
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
+  // Get boundary bounds for coordinate generation
+  const getBoundaryBounds = (geojson: any) => {
+    let minLat = Infinity, maxLat = -Infinity;
+    let minLng = Infinity, maxLng = -Infinity;
+    
+    if (geojson?.features) {
+      geojson.features.forEach((feature: any) => {
+        if (feature.geometry.type === 'Polygon') {
+          feature.geometry.coordinates[0].forEach(([lng, lat]: [number, number]) => {
+            minLat = Math.min(minLat, lat);
+            maxLat = Math.max(maxLat, lat);
+            minLng = Math.min(minLng, lng);
+            maxLng = Math.max(maxLng, lng);
+          });
+        }
+      });
+    }
+    
+    return { minLat, maxLat, minLng, maxLng };
+  };
+
   const simulateCollection = async () => {
     setIsCollecting(true);
     setProgress(0);
     setResults([]);
     
+    if (!config.boundingFile) {
+      toast({
+        title: "No boundary file",
+        description: "Please upload a GeoJSON boundary file first",
+        variant: "destructive"
+      });
+      setIsCollecting(false);
+      return;
+    }
+
     const statusMessages = [
+      'Parsing GeoJSON boundary file...',
       'Initializing browser automation...',
       'Loading starting URL with Playwright...',
       'Locating pegman icon...',
@@ -73,23 +136,53 @@ export const StreetViewCollector = () => {
     ];
 
     try {
+      // Parse the GeoJSON file
+      const fileText = await config.boundingFile.text();
+      const geojsonData = JSON.parse(fileText);
+      const bounds = getBoundaryBounds(geojsonData);
+      
+      setCurrentStatus('Boundary file parsed successfully');
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       for (let i = 0; i < config.targetCount; i++) {
-        // Simulate collection steps
-        setCurrentStatus(statusMessages[i % statusMessages.length]);
+        setCurrentStatus(statusMessages[(i + 1) % statusMessages.length]);
         
-        // Simulate finding a street view point
-        const mockResult: StreetViewResult = {
-          panoid: `sv_${Math.random().toString(36).substr(2, 12)}`,
-          latitude: 40.7128 + (Math.random() - 0.5) * 0.01,
-          longitude: -74.0060 + (Math.random() - 0.5) * 0.01,
-          timestamp: new Date().toISOString()
-        };
+        // Generate coordinates within boundary bounds and validate
+        let attempts = 0;
+        let validCoords = false;
+        let lat: number, lng: number;
         
-        setResults(prev => [...prev, mockResult]);
+        do {
+          // Generate random coordinates within the bounding box
+          lat = bounds.minLat + Math.random() * (bounds.maxLat - bounds.minLat);
+          lng = bounds.minLng + Math.random() * (bounds.maxLng - bounds.minLng);
+          
+          // Check if the point is actually within the boundary
+          validCoords = isPointInBoundary(lat, lng, geojsonData);
+          attempts++;
+          
+          // Prevent infinite loops
+          if (attempts > 100) {
+            console.warn('Could not find valid coordinates within boundary after 100 attempts');
+            break;
+          }
+        } while (!validCoords);
+        
+        if (validCoords) {
+          const mockResult: StreetViewResult = {
+            panoid: `sv_${Math.random().toString(36).substr(2, 12)}`,
+            latitude: lat,
+            longitude: lng,
+            timestamp: new Date().toISOString()
+          };
+          
+          setResults(prev => [...prev, mockResult]);
+        }
+        
         setProgress(((i + 1) / config.targetCount) * 100);
         
         // Simulate processing delay
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 150));
       }
       
       setCurrentStatus('Collection completed successfully');
